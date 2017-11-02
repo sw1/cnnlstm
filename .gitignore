@@ -1,0 +1,6 @@
+*.old
+*.pkl
+*.rds
+*.sh.o*
+/data
+/out
