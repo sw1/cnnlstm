@@ -19,9 +19,15 @@ from keras.layers.convolutional import Conv1D, MaxPooling1D
 from keras.preprocessing import sequence
 from keras.optimizers import Adam
 from keras.utils import np_utils
+from hyperopt import Trials, STATUS_OK, tpe
+from hyperas import optim
+from hyperas.distributions import choice, uniform, conditional
 
 
-def data(k):
+def data():
+
+    k = 4
+    seed_data = 42
 
     nts = ['A','C','G','T']
     key = {''.join(kmer):i+1 for i,kmer in enumerate(product(nts,repeat=k))}
@@ -37,8 +43,10 @@ def data(k):
     meta = csv.reader(open(meta_fn,'r'), delimiter=',', quotechar='"')
     meta = [(r,l) for r,l in meta if r in fns]
 
-    train, test = train_test_split(meta,test_size=0.2,random_state=42,shuffle=True,stratify=[l for r,l in meta])
-    val, test = train_test_split(test,test_size=0.5,random_state=42,shuffle=True,stratify=[l for r,l in test])
+    train, test = train_test_split(meta,test_size=0.2,random_state=seed,
+            shuffle=True,stratify=[l for r,l in meta])
+    val, test = train_test_split(test,test_size=0.5,random_state=seed,
+            shuffle=True,stratify=[l for r,l in test])
 
     ids_train = [r for r,l in train]
     ids_val = [r for r,l in val]
@@ -52,7 +60,8 @@ def data(k):
 
 class GenerateBatch(object):
 
-    def __init__(self, read_len, n_batch = 32, n_classes = 2, n_reads = 250, n_pad = 21, shuffle = True):
+    def __init__(self, read_len, n_batch = 32, n_classes = 2, n_reads = 250, n_pad = 21, 
+            shuffle = True):
         'Initialization'
         self.read_len = read_len
         self.n_classes = n_classes
@@ -72,9 +81,6 @@ class GenerateBatch(object):
 
     def __data_generation(self, fns, labels, ids):
         'Generates data of batch_size samples'
-
-        # Flush sysout
-        #sys.stdout.flush()
 
         # Initialization
         batch_X = np.zeros((self.n_batch, self.max_len), dtype=int)
@@ -134,69 +140,74 @@ class GenerateBatch(object):
 
         return [reads,reads,reads], labs
 
+def model(labels,fns,ids,key):
 
-#sys.stdout = open('model_log.txt','w')
+    n_epochs = 1 #25
+    
+    windows = {{choice([(2,2,2),(4,4,4),(2,4,8),(2,6,10)])}}
 
-np.random.seed(1)
+    read_len = len(six.moves.cPickle.load(open(next(iter(fns.values())),'rb'))[0])
 
-k = 4
+    n_classes = max(labels.values()) + 1
 
-labels, fns, ids, key = data(k)
+    params = {'read_len': read_len,
+              'n_classes': n_classes,
+              'n_batch': {{choice([32,64])}},
+              'n_reads': {{choice([250,600,999])}},
+              'n_pad': max(windows) * k,
+              'shuffle': True}
 
-windows = (2,4,8)
+    gen = GenerateBatch(**params)
+    train_generator = gen.generate(fns,labels,ids['train'])
+    val_generator = gen.generate(fns,labels,ids['val'])
 
-read_len = len(six.moves.cPickle.load(open(next(iter(fns.values())),'rb'))[0])
 
-n_classes = max(labels.values()) + 1
+    inputs = list()
+    submodels = list()
 
-params = {'read_len': read_len,
-          'n_classes': n_classes,
-          'n_batch': 32,
-          'n_reads': 350,
-          'n_pad': max(windows) * k,
-          'shuffle': True}
+    for i,w in enumerate(windows):
+        inputs.append(Input(shape=(gen.max_len,), dtype='int32'))
+        layer_embed = Embedding(input_dim=len(key), 
+                output_dim={{choice([32,64,128])}}, 
+                input_length=gen.max_len,mask_zero=False)(inputs[i])
+        layer_cnn = Conv1D({{choice([32,64,128])}}, 
+                kernel_size=w, padding='same', activation='relu')(layer_embed)
+        submodels.append(layer_cnn)
 
-gen = GenerateBatch(**params)
-train_generator = gen.generate(fns,labels,ids['train'])
-val_generator = gen.generate(fns,labels,ids['val'])
+    layer_cnns = concatenate(submodels)
+    layer_lstm_1 = LSTM({{choice([64,128,256])}}, 
+            dropout={{uniform(0,.5)}}, 
+            recurrent_dropout={{uniform(0,.5)}})(layer_cnns)
+    output = Dense(n_classes, activation='softmax')(layer_lstm_1)
+    model = Model(inputs=inputs, outputs=[output])
 
-n_epochs = 30
-d_emb = 64
-d_cnn = 64
-d_lstm = 64
+    model.compile(loss='categorical_crossentropy',
+            optimizer={{choice(['rmsprop','adam'])}},
+            metrics=['accuracy'])
 
-inputs = list()
-submodels = list()
+    model.fit_generator(generator = train_generator,
+                        steps_per_epoch = len(ids['train'])//gen.n_batch,
+                        validation_data = val_generator,
+                        validation_steps = len(ids['test'])//gen.n_batch,
+                        epochs=n_epochs,
+                        verbose=1)
 
-for i,w in enumerate(windows):
-    inputs.append(Input(shape=(gen.max_len,), dtype='int32'))
-    layer_embed = Embedding(input_dim=len(key), output_dim=d_emb, input_length=gen.max_len,mask_zero=False)(inputs[i])
-    layer_cnn = Conv1D(d_cnn, kernel_size=w, padding='same', activation='relu')(layer_embed)
-    submodels.append(layer_cnn)
+    X_testset, y_testset = gen.test(fns,labels,ids['test'])
 
-layer_cnns = concatenate(submodels)
-layer_lstm_1 = LSTM(d_lstm, dropout=.2, recurrent_dropout=.1)(layer_cnns)
-output = Dense(n_classes, activation='softmax')(layer_lstm_1)
-model = Model(inputs=inputs, outputs=[output])
+    scores,acc = model.evaluate(X_testset,y_testset,batch_size=params['n_batch'],verbose=1)
+    print('Test accuracy:',acc)
 
-model.compile(loss='categorical_crossentropy',optimizer='adam',metrics=['accuracy'])
+    return {'loss':-acc, 'status': STATUS_OK, 'model': model}
+    
+if __name__ == '__main__':
 
-model.fit_generator(generator = train_generator,
-                    steps_per_epoch = len(ids['train'])//gen.n_batch,
-                    validation_data = val_generator,
-                    validation_steps = len(ids['test'])//gen.n_batch,
-                    epochs=n_epochs,
-                    verbose=1)
+    max_evals = 1 #5
 
-X_testset, y_testset = gen.test(fns,labels,ids['test'])
+    best_run, best_model = optim.minimize(model=model,data=data,algo=tpe.suggest,
+            max_evals=max_evals,trials=Trials())
+    
+    six.moves.cPickle.dump({'best_run':best_run,'best_model':best_model},
+            open('out/sweep.pkl','wb'))
 
-scores = model.evaluate(X_testset,y_testset,batch_size=params['n_batch'],verbose=1)
-print('Testing accuracy: %.2f%%' % (scores[1]*100))
-
-model.save('out/cnn_lstm_batches_earth_k' + str(k) + '.pkl')
-
-six.moves.cPickle.dump({'ids':ids,'labels':labels},
-        open('out/cnn_lstm_batches_earth_k' + str(k) + '_ids.pkl','wb'))
-
-six.moves.cPickle.dump({'test':scores},
-        open('out/cnn_lstm_batches_earth_k' + str(k) + '_scores.pkl','wb'))
+    print('Best hyperparams: ')
+    print(best_run)
