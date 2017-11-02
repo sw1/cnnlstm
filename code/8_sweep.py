@@ -19,15 +19,102 @@ from keras.layers.convolutional import Conv1D, MaxPooling1D
 from keras.preprocessing import sequence
 from keras.optimizers import Adam
 from keras.utils import np_utils
-from hyperopt import Trials, STATUS_OK, tpe
+from hyperopt import Trials, STATUS_OK, tpe, rand
 from hyperas import optim
 from hyperas.distributions import choice, uniform, conditional
 
 
 def data():
+    
+    class GenerateBatch(object):
+
+        def __init__(self, read_len, windows, n_vocab, n_batch = 32, n_classes = 2, n_reads = 250, n_pad = 21, 
+                shuffle = True):
+            'Initialization'
+            self.read_len = read_len
+            self.windows = windows
+            self.n_vocab = n_vocab
+            self.n_classes = n_classes
+            self.n_batch = n_batch
+            self.n_reads = n_reads
+            self.n_pad = n_pad
+            self.max_len = n_reads * (read_len + n_pad)
+            self.shuffle = shuffle
+
+        def __get_exploration_order(self, ids):
+            'Generates order of exploration'
+            # Find exploration order
+            if self.shuffle == True:
+                random.shuffle(ids)
+
+            return ids
+
+        def __data_generation(self, fns, labels, ids):
+            'Generates data of batch_size samples'
+
+            # Initialization
+            batch_X = np.zeros((self.n_batch, self.max_len), dtype=int)
+            batch_y = np.zeros((self.n_batch,n_classes), dtype=float)
+
+            for i,id in enumerate(ids):
+
+                x = six.moves.cPickle.load(open(fns[id],'rb'))
+                batch_y[i][labels[id]] = 1.0
+                read_idxs = random.sample(range(len(x)),self.n_reads)
+
+                for r,idx in enumerate(read_idxs):
+                    batch_X[i,r*self.read_len + r*self.n_pad:(r+1)*self.read_len + r*self.n_pad] = x[idx]
+
+            return batch_X, batch_y
+
+        def generate(self, fns, labels, ids):
+            'Generates batches of samples'
+            # Infinite loop
+            while True:
+                # Generate order of exploration of dataset
+                ids_tmp = self.__get_exploration_order(ids)
+
+                # Generate batches
+                end = int(len(ids)/self.n_batch)
+                for i in range(end):
+                    # Find list of IDs
+                    batch_ids = ids_tmp[i*self.n_batch:(i+1)*self.n_batch]
+                    # Generate data
+                    batch_X, batch_y = self.__data_generation(fns, labels, batch_ids)
+
+                    yield [batch_X,batch_X,batch_X], batch_y
+
+        def test(self, fns, labels, ids,trim=True):
+
+            reads = list()
+            reads_len = list()
+            labs = np.zeros((len(ids),self.n_classes), dtype=float)
+
+            for i,id in enumerate(ids):
+
+                labs[i][labels[id]] = 1.0
+
+                i_reads = six.moves.cPickle.load(open(fns[id],'rb'))
+                random.shuffle(i_reads)
+
+                reads_len.append(len(i_reads))
+                read = list()
+
+                for r in i_reads:
+                    read.extend(r)
+                    read.extend([0]*self.n_pad)
+
+                reads.append(read)
+
+            reads = sequence.pad_sequences(reads, maxlen=self.max_len)
+
+            return [reads,reads,reads], labs
+
 
     k = 4
-    seed_data = 42
+    seed = 42
+    
+    windows = (2,4,8) 
 
     nts = ['A','C','G','T']
     key = {''.join(kmer):i+1 for i,kmer in enumerate(product(nts,repeat=k))}
@@ -52,122 +139,41 @@ def data():
     ids_val = [r for r,l in val]
     ids_test = [r for r,l in test]
 
-    ids_dict = {'train':ids_train,'val':ids_val,'test':ids_test}
+    ids = {'train':ids_train,'val':ids_val,'test':ids_test}
     labels = {r:int(l) for r,l in meta}
-
-    return labels, fns, ids_dict, key
-
-
-class GenerateBatch(object):
-
-    def __init__(self, read_len, n_batch = 32, n_classes = 2, n_reads = 250, n_pad = 21, 
-            shuffle = True):
-        'Initialization'
-        self.read_len = read_len
-        self.n_classes = n_classes
-        self.n_batch = n_batch
-        self.n_reads = n_reads
-        self.n_pad = n_pad
-        self.max_len = n_reads * (read_len + n_pad)
-        self.shuffle = shuffle
-
-    def __get_exploration_order(self, ids):
-        'Generates order of exploration'
-        # Find exploration order
-        if self.shuffle == True:
-            random.shuffle(ids)
-
-        return ids
-
-    def __data_generation(self, fns, labels, ids):
-        'Generates data of batch_size samples'
-
-        # Initialization
-        batch_X = np.zeros((self.n_batch, self.max_len), dtype=int)
-        batch_y = np.zeros((self.n_batch,n_classes), dtype=float)
-
-        for i,id in enumerate(ids):
-
-            x = six.moves.cPickle.load(open(fns[id],'rb'))
-            batch_y[i][labels[id]] = 1.0
-            read_idxs = random.sample(range(len(x)),self.n_reads)
-
-            for r,idx in enumerate(read_idxs):
-                batch_X[i,r*self.read_len + r*self.n_pad:(r+1)*self.read_len + r*self.n_pad] = x[idx]
-
-        return batch_X, batch_y
-
-    def generate(self, fns, labels, ids):
-        'Generates batches of samples'
-        # Infinite loop
-        while True:
-            # Generate order of exploration of dataset
-            ids_tmp = self.__get_exploration_order(ids)
-
-            # Generate batches
-            end = int(len(ids)/self.n_batch)
-            for i in range(end):
-                # Find list of IDs
-                batch_ids = ids_tmp[i*self.n_batch:(i+1)*self.n_batch]
-                # Generate data
-                batch_X, batch_y = self.__data_generation(fns, labels, batch_ids)
-
-                yield [batch_X,batch_X,batch_X], batch_y
-
-    def test(self, fns, labels, ids,trim=True):
-
-        reads = list()
-        reads_len = list()
-        labs = np.zeros((len(ids),n_classes), dtype=float)
-
-        for i,id in enumerate(ids):
-
-            labs[i][labels[id]] = 1.0
-
-            i_reads = six.moves.cPickle.load(open(fns[id],'rb'))
-            random.shuffle(i_reads)
-
-            reads_len.append(len(i_reads))
-            read = list()
-
-            for r in i_reads:
-                read.extend(r)
-                read.extend([0]*self.n_pad)
-
-            reads.append(read)
-
-        reads = sequence.pad_sequences(reads, maxlen=self.max_len)
-
-        return [reads,reads,reads], labs
-
-def model(labels,fns,ids,key):
-
-    n_epochs = 1 #25
-    
-    windows = {{choice([(2,2,2),(4,4,4),(2,4,8),(2,6,10)])}}
 
     read_len = len(six.moves.cPickle.load(open(next(iter(fns.values())),'rb'))[0])
 
     n_classes = max(labels.values()) + 1
 
     params = {'read_len': read_len,
+              'windows':windows,
+              'n_vocab': len(key),
               'n_classes': n_classes,
-              'n_batch': {{choice([32,64])}},
-              'n_reads': {{choice([250,600,999])}},
+              'n_batch': 32,  
+              'n_reads': 500,
               'n_pad': max(windows) * k,
               'shuffle': True}
 
     gen = GenerateBatch(**params)
+    
     train_generator = gen.generate(fns,labels,ids['train'])
     val_generator = gen.generate(fns,labels,ids['val'])
+    X_testset, y_testset = gen.test(fns,labels,ids['test'])
+
+    return gen, train_generator, val_generator, ids, X_testset, y_testset
 
 
+def model(gen, train_generator, val_generator, ids, X_testset, y_testset):
+
+    n_epochs = 25
+    
     inputs = list()
     submodels = list()
 
-    for i,w in enumerate(windows):
+    for i,w in enumerate(gen.windows):
         inputs.append(Input(shape=(gen.max_len,), dtype='int32'))
-        layer_embed = Embedding(input_dim=len(key), 
+        layer_embed = Embedding(input_dim=gen.n_vocab, 
                 output_dim={{choice([32,64,128])}}, 
                 input_length=gen.max_len,mask_zero=False)(inputs[i])
         layer_cnn = Conv1D({{choice([32,64,128])}}, 
@@ -175,7 +181,7 @@ def model(labels,fns,ids,key):
         submodels.append(layer_cnn)
 
     layer_cnns = concatenate(submodels)
-    layer_lstm_1 = LSTM({{choice([64,128,256])}}, 
+    layer_lstm_1 = LSTM({{choice([32,64,128])}}, 
             dropout={{uniform(0,.5)}}, 
             recurrent_dropout={{uniform(0,.5)}})(layer_cnns)
     output = Dense(n_classes, activation='softmax')(layer_lstm_1)
@@ -192,9 +198,8 @@ def model(labels,fns,ids,key):
                         epochs=n_epochs,
                         verbose=1)
 
-    X_testset, y_testset = gen.test(fns,labels,ids['test'])
 
-    scores,acc = model.evaluate(X_testset,y_testset,batch_size=params['n_batch'],verbose=1)
+    scores,acc = model.evaluate(X_testset,y_testset,batch_size=gen.n_batch,verbose=1)
     print('Test accuracy:',acc)
 
     return {'loss':-acc, 'status': STATUS_OK, 'model': model}
@@ -203,11 +208,16 @@ if __name__ == '__main__':
 
     max_evals = 1 #5
 
-    best_run, best_model = optim.minimize(model=model,data=data,algo=tpe.suggest,
-            max_evals=max_evals,trials=Trials())
+    best_run, best_model = optim.minimize(model=model,data=data,algo=rand.suggest,
+            max_evals=max_evals,trials=Trials(),rseed=456)
     
     six.moves.cPickle.dump({'best_run':best_run,'best_model':best_model},
             open('out/sweep.pkl','wb'))
+
+    _, _, _, _, X_test, y_test = data()
+
+    print('Evaluation of best model: ')
+    print(best_model.evalulate([X_test,X_test,X_test],y_test))
 
     print('Best hyperparams: ')
     print(best_run)

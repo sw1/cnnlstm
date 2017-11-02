@@ -2,5 +2,6 @@
 *.pkl
 *.rds
 *.sh.o*
+/.ipynb_checkpoints
 /data
 /out
