@@ -184,8 +184,9 @@ model.compile(loss='categorical_crossentropy',optimizer='adam',metrics=['accurac
 model.fit_generator(generator = train_generator,
                     steps_per_epoch = len(ids['train'])//gen.n_batch,
                     validation_data = val_generator,
-                    validation_steps = len(ids['test'])//gen.n_batch,
+                    validation_steps = len(ids['val'])//gen.n_batch,
                     epochs=n_epochs,
+                    class_weight='auto',
                     verbose=1)
 
 X_testset, y_testset = gen.test(fns,labels,ids['test'])

@@ -8,6 +8,7 @@ import six.moves.cPickle
 import csv
 import numpy as np
 import random
+from sys import argv
 from sklearn.model_selection import train_test_split
 from itertools import product
 from collections import Counter
@@ -54,7 +55,7 @@ def data():
 
             # Initialization
             batch_X = np.zeros((self.n_batch, self.max_len), dtype=int)
-            batch_y = np.zeros((self.n_batch,n_classes), dtype=float)
+            batch_y = np.zeros((self.n_batch, self.n_classes), dtype=float)
 
             for i,id in enumerate(ids):
 
@@ -111,11 +112,18 @@ def data():
             return [reads,reads,reads], labs
 
 
-    k = 4
+    
+
+    param_row = int(argv[1]) - 1
+    k = int(argv[2])
+
+    hyperparams = open('params.csv','r').readlines()[param_row].rstrip()
+    windows = eval(hyperparams.split('"')[1])
+    n_reads = int(hyperparams.split('"')[2].split(',')[1])
+    n_batch = int(hyperparams.split('"')[2].split(',')[2])
+
     seed = 42
     
-    windows = (2,4,8) 
-
     nts = ['A','C','G','T']
     key = {''.join(kmer):i+1 for i,kmer in enumerate(product(nts,repeat=k))}
     key['PAD'] = 0
@@ -150,8 +158,8 @@ def data():
               'windows':windows,
               'n_vocab': len(key),
               'n_classes': n_classes,
-              'n_batch': 32,  
-              'n_reads': 500,
+              'n_batch': n_batch,#32,  
+              'n_reads': n_reads,#500,
               'n_pad': max(windows) * k,
               'shuffle': True}
 
@@ -159,6 +167,7 @@ def data():
     
     train_generator = gen.generate(fns,labels,ids['train'])
     val_generator = gen.generate(fns,labels,ids['val'])
+
     X_testset, y_testset = gen.test(fns,labels,ids['test'])
 
     return gen, train_generator, val_generator, ids, X_testset, y_testset
@@ -166,7 +175,7 @@ def data():
 
 def model(gen, train_generator, val_generator, ids, X_testset, y_testset):
 
-    n_epochs = 25
+    n_epochs = 20
     
     inputs = list()
     submodels = list()
@@ -174,50 +183,51 @@ def model(gen, train_generator, val_generator, ids, X_testset, y_testset):
     for i,w in enumerate(gen.windows):
         inputs.append(Input(shape=(gen.max_len,), dtype='int32'))
         layer_embed = Embedding(input_dim=gen.n_vocab, 
-                output_dim={{choice([32,64,128])}}, 
+                output_dim={{choice([32,64])}}, 
                 input_length=gen.max_len,mask_zero=False)(inputs[i])
-        layer_cnn = Conv1D({{choice([32,64,128])}}, 
+        layer_cnn = Conv1D({{choice([32,64])}}, 
                 kernel_size=w, padding='same', activation='relu')(layer_embed)
         submodels.append(layer_cnn)
 
     layer_cnns = concatenate(submodels)
-    layer_lstm_1 = LSTM({{choice([32,64,128])}}, 
+    layer_lstm_1 = LSTM({{choice([32,64])}}, 
             dropout={{uniform(0,.5)}}, 
             recurrent_dropout={{uniform(0,.5)}})(layer_cnns)
-    output = Dense(n_classes, activation='softmax')(layer_lstm_1)
+    output = Dense(gen.n_classes, activation='softmax')(layer_lstm_1)
     model = Model(inputs=inputs, outputs=[output])
 
     model.compile(loss='categorical_crossentropy',
-            optimizer={{choice(['rmsprop','adam'])}},
+            optimizer={{choice(['adam'])}},
             metrics=['accuracy'])
 
     model.fit_generator(generator = train_generator,
                         steps_per_epoch = len(ids['train'])//gen.n_batch,
                         validation_data = val_generator,
-                        validation_steps = len(ids['test'])//gen.n_batch,
+                        validation_steps = len(ids['val'])//gen.n_batch,
                         epochs=n_epochs,
+                        class_weight='auto',
                         verbose=1)
 
-
-    scores,acc = model.evaluate(X_testset,y_testset,batch_size=gen.n_batch,verbose=1)
-    print('Test accuracy:',acc)
+    scores, acc = model.evaluate(X_testset,y_testset)
 
     return {'loss':-acc, 'status': STATUS_OK, 'model': model}
     
 if __name__ == '__main__':
 
-    max_evals = 1 #5
+    max_evals = 5
 
-    best_run, best_model = optim.minimize(model=model,data=data,algo=rand.suggest,
+    best_params, best_model = optim.minimize(model=model,data=data,algo=rand.suggest,
             max_evals=max_evals,trials=Trials(),rseed=456)
     
-    six.moves.cPickle.dump({'best_run':best_run,'best_model':best_model},
-            open('out/sweep.pkl','wb'))
-
-    _, _, _, _, X_test, y_test = data()
+    gen, _, _, _, X_testset, y_testset = data()
+    
+    test_loss,test_acc = best_model.evaluate(X_testset,y_testset)
+    
+    six.moves.cPickle.dump({'best_params':best_params,'test_loss':test_loss,'test_acc':test_acc},
+            open('out/sweep_' + str(param_row + 1) + '.pkl','wb'))
 
     print('Evaluation of best model: ')
-    print(best_model.evalulate([X_test,X_test,X_test],y_test))
+    print(test_acc)
 
     print('Best hyperparams: ')
-    print(best_run)
+    print(best_params)
