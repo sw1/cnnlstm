@@ -27,6 +27,7 @@ SCRATCH_KMERS=$SCRATCH_DATA/kmers_$k
 
 mkdir -p $SCRATCH_OUT
 mkdir -p $SCRATCH_KMERS
+mkdir -p $SCRATCH/logs_k$k
 
 CODE=/home/$USERNAME/earth/code
 KMERS=/home/$USERNAME/earth/data/kmers_$k
@@ -42,7 +43,7 @@ cp $labels $SCRATCH_DATA/
 
 cd $SCRATCH
 
-$py $script
+$py $script $k
 
 cp $SCRATCH_OUT/* $OUT/
 

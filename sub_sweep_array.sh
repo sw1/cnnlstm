@@ -6,9 +6,9 @@
 #$ -l h_rt=48:00:00
 #$ -P rosenPrj
 #$ -l ua=haswell
-#$ -pe shm 8
-#$ -l mem_free=6G
-#$ -l h_vmem=8G
+#$ -pe shm 6
+#$ -l mem_free=10G
+#$ -l h_vmem=10.5G
 #$ -q all.q
 #$ -t 1-12
 

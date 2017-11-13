@@ -12,13 +12,14 @@ from sys import argv
 from sklearn.model_selection import train_test_split
 from itertools import product
 from collections import Counter
+from keras.optimizers import Adam
+from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, TensorBoard, EarlyStopping
 from keras.models import Model
-from keras.layers import Dense, LSTM, Dropout, Input, concatenate
+from keras.layers import Dense, LSTM, Dropout, Input, concatenate, Bidirectional
 from keras.layers.embeddings import Embedding
 from keras.layers.pooling import GlobalMaxPooling1D
 from keras.layers.convolutional import Conv1D, MaxPooling1D
 from keras.preprocessing import sequence
-from keras.optimizers import Adam
 from keras.utils import np_utils
 from hyperopt import Trials, STATUS_OK, tpe, rand
 from hyperas import optim
@@ -158,8 +159,8 @@ def data():
               'windows':windows,
               'n_vocab': len(key),
               'n_classes': n_classes,
-              'n_batch': n_batch,#32,  
-              'n_reads': n_reads,#500,
+              'n_batch': n_batch,  
+              'n_reads': n_reads,
               'n_pad': max(windows) * k,
               'shuffle': True}
 
@@ -175,7 +176,7 @@ def data():
 
 def model(gen, train_generator, val_generator, ids, X_testset, y_testset):
 
-    n_epochs = 20
+    n_epochs = 50
     
     inputs = list()
     submodels = list()
@@ -190,11 +191,13 @@ def model(gen, train_generator, val_generator, ids, X_testset, y_testset):
         submodels.append(layer_cnn)
 
     layer_cnns = concatenate(submodels)
-    layer_lstm_1 = LSTM({{choice([32,64])}}, 
+    layer_lstm_1 = Bidirectional(LSTM({{choice([32,64])}}, 
             dropout={{uniform(0,.5)}}, 
-            recurrent_dropout={{uniform(0,.5)}})(layer_cnns)
+            recurrent_dropout={{uniform(0,.5)}}))(layer_cnns)
     output = Dense(gen.n_classes, activation='softmax')(layer_lstm_1)
     model = Model(inputs=inputs, outputs=[output])
+
+    adam = Adam(lr=.05,decay=1e-2)
 
     model.compile(loss='categorical_crossentropy',
             optimizer={{choice(['adam'])}},
@@ -214,7 +217,10 @@ def model(gen, train_generator, val_generator, ids, X_testset, y_testset):
     
 if __name__ == '__main__':
 
-    max_evals = 5
+    param_row = argv[1]
+    k = argv[2]
+    
+    max_evals = 3
 
     best_params, best_model = optim.minimize(model=model,data=data,algo=rand.suggest,
             max_evals=max_evals,trials=Trials(),rseed=456)
@@ -224,7 +230,7 @@ if __name__ == '__main__':
     test_loss,test_acc = best_model.evaluate(X_testset,y_testset)
     
     six.moves.cPickle.dump({'best_params':best_params,'test_loss':test_loss,'test_acc':test_acc},
-            open('out/sweep_' + str(param_row + 1) + '.pkl','wb'))
+            open('out/sweep_k' + k + '_' + param_row + '.pkl','wb'))
 
     print('Evaluation of best model: ')
     print(test_acc)
