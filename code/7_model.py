@@ -15,7 +15,7 @@ from collections import Counter
 from keras.optimizers import Adam
 from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, TensorBoard, EarlyStopping
 from keras.models import Model
-from keras.layers import Dense, LSTM, Dropout, Input, concatenate, Bidirectional
+from keras.layers import Dense, LSTM, Dropout, Input, concatenate, Bidirectional, Lambda
 from keras.layers.embeddings import Embedding
 from keras.layers.pooling import GlobalMaxPooling1D
 from keras.layers.convolutional import Conv1D, MaxPooling1D
@@ -114,6 +114,7 @@ class GenerateBatch(object):
 
 
 k = int(argv[1])
+cl = argv[2]
 
 windows = (2,4,8)
 n_reads = 250
@@ -171,6 +172,9 @@ val_generator = gen.generate(fns,labels,ids['val'])
 
 
 n_epochs = 100
+d_emb = 64
+d_cnn = 32
+d_lstm = 32
 
 inputs = list()
 submodels = list()
@@ -178,25 +182,27 @@ submodels = list()
 for i,w in enumerate(gen.windows):
     inputs.append(Input(shape=(gen.max_len,), dtype='int32'))
     layer_embed = Embedding(input_dim=gen.n_vocab, 
-            output_dim=64, 
+            output_dim=d_emb, 
             input_length=gen.max_len,mask_zero=False)(inputs[i])
-    layer_cnn = Conv1D(32, 
+    layer_cnn = Conv1D(d_cnn, 
             kernel_size=w, padding='same', activation='relu')(layer_embed)
     submodels.append(layer_cnn)
 
 layer_cnns = concatenate(submodels)
-layer_lstm_1 = Bidirectional(LSTM(32, 
-        dropout=.2, 
-        recurrent_dropout=.2))(layer_cnns)
-output = Dense(gen.n_classes, activation='softmax')(layer_lstm_1)
+layer_lstm_1 = Bidirectional(LSTM(d_lstm,
+        return_sequences=True,
+        dropout=.25, 
+        recurrent_dropout=.1))(layer_cnns)
+layer_lstm_n = Lambda(lambda x: x[:,-1,:], output_shape=(2*d_lstm, ))(layer_lstm_1)
+output = Dense(gen.n_classes, activation='softmax')(layer_lstm_n)
 model = Model(inputs=inputs, outputs=[output])
 
 model_cp = ModelCheckpoint('out/model_k' + str(k) + '_{epoch:02d}_{val_loss:.2f}.hdf5',
-        monitor='val_loss',verbose=1,save_best_only=True,period=1)
-model_reduce_lr = ReduceLROnPlateau(monitor='val_loss',factor=0.65,patience=3,min_lr=.00005,
+        monitor='loss',verbose=1,save_best_only=True,period=1)
+model_reduce_lr = ReduceLROnPlateau(monitor='loss',factor=0.65,patience=3,min_lr=.00005,
         verbose=1)
-model_stop = EarlyStopping(monitor='val_loss',min_delta=0.01,patience=10,verbose=1)
-model_tb = TensorBoard(log_dir='/scratch/sw424/train_cnn_lstm/logs_k' + str(k),
+model_stop = EarlyStopping(monitor='loss',min_delta=0.01,patience=25,verbose=1)
+model_tb = TensorBoard(log_dir='/scratch/sw424/train_' + cl + '/logs_k' + str(k),
         write_graph=True,write_grads=True,
         batch_size=32,write_images=True)
 cbs = [model_cp,model_reduce_lr,model_stop,model_tb]
@@ -219,7 +225,6 @@ model.fit_generator(generator = train_generator,
 X_testset, y_testset = gen.test(fns,labels,ids['test'])
 scores, acc = model.evaluate(X_testset,y_testset)
 
-print('Testing accuracy: %.2f%%' % (scores[1]*100))
 
 model.save('out/model_final_k' + str(k) + '.pkl')
 
@@ -228,3 +233,5 @@ six.moves.cPickle.dump({'ids':ids,'labels':labels},
 
 six.moves.cPickle.dump({'test':scores,'acc':acc},
                 open('out/model_final_k' + str(k) + '_testscores.pkl','wb'))
+
+print(scores)

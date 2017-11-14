@@ -18,9 +18,10 @@ module load gcc/4.8.1
 module load python/intelpython/3.5.3
 
 k=4
+class=lake
 USERNAME=sw424
 
-SCRATCH=/scratch/$USERNAME/train_cnn_lstm
+SCRATCH=/scratch/$USERNAME/train_$class
 SCRATCH_OUT=$SCRATCH/out
 SCRATCH_DATA=$SCRATCH/data
 SCRATCH_KMERS=$SCRATCH_DATA/kmers_$k
@@ -43,7 +44,7 @@ cp $labels $SCRATCH_DATA/
 
 cd $SCRATCH
 
-$py $script $k
+$py $script $k $class
 
 cp $SCRATCH_OUT/* $OUT/
 
