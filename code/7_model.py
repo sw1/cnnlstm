@@ -179,23 +179,33 @@ d_lstm = 32
 inputs = list()
 submodels = list()
 
+layer_embed = Embedding(input_dim=gen.n_vocab, 
+        output_dim=d_emb, 
+        input_length=gen.max_len,mask_zero=False,
+        name='embedding')
+
 for i,w in enumerate(gen.windows):
-    inputs.append(Input(shape=(gen.max_len,), dtype='int32'))
-    layer_embed = Embedding(input_dim=gen.n_vocab, 
-            output_dim=d_emb, 
-            input_length=gen.max_len,mask_zero=False)(inputs[i])
+    inputs.append(Input(shape=(gen.max_len,),
+        dtype='int32',
+        name='input_cp' + str(i)))
+    embedding = layer_embed(inputs[i])
     layer_cnn = Conv1D(d_cnn, 
-            kernel_size=w, padding='same', activation='relu')(layer_embed)
+            kernel_size=w,
+            padding='same',
+            activation='relu',
+            name='cnn_w' + str(w))(embedding)
     submodels.append(layer_cnn)
 
-layer_cnns = concatenate(submodels)
+layer_cnns = concatenate(submodels,name='merge_cnn_features')
+layer_dropout_1 = Dropout(.5)(layer_cnns) 
 layer_lstm_1 = Bidirectional(LSTM(d_lstm,
         return_sequences=True,
         dropout=.25, 
-        recurrent_dropout=.1))(layer_cnns)
-layer_lstm_n = Lambda(lambda x: x[:,-1,:], output_shape=(2*d_lstm, ))(layer_lstm_1)
-output = Dense(gen.n_classes, activation='softmax')(layer_lstm_n)
-model = Model(inputs=inputs, outputs=[output])
+        recurrent_dropout=.1),name='biLSTM')(layer_dropout_1)
+layer_lstm_n = Lambda(lambda x: x[:,-1,:],output_shape=(2*d_lstm, ),
+        name='biLSTM_last_layer')(layer_lstm_1)
+output = Dense(gen.n_classes,activation='softmax',name='output')(layer_lstm_n)
+model = Model(inputs=inputs,outputs=[output])
 
 model_cp = ModelCheckpoint('out/model_k' + str(k) + '_{epoch:02d}_{val_loss:.2f}.hdf5',
         monitor='loss',verbose=1,save_best_only=True,period=1)
