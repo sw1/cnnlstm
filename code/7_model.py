@@ -28,7 +28,7 @@ from hyperas.distributions import choice, uniform, conditional
 class GenerateBatch(object):
     def __init__(self, read_len, windows, n_vocab, 
             n_batch = 32, n_classes = 2, n_reads = 250, n_pad = 21, 
-            shuffle = True):
+            shuffle = True, one_hot = False):
         'Initialization'
         self.read_len = read_len
         self.windows = windows
@@ -39,6 +39,15 @@ class GenerateBatch(object):
         self.n_pad = n_pad
         self.max_len = n_reads * (read_len + n_pad)
         self.shuffle = shuffle
+        self.one_hot = one_hot
+        self.out_type = 'float32'
+
+        if one_hot:
+            self.in_len = (None, self.n_vocab) #(self.max_len, self.n_vocab,)
+            self.in_type = 'float32'
+        else:
+            self.in_len = (None,) #(self.max_len,)
+            self.in_type = 'int32'
 
     def __get_exploration_order(self, ids):
         'Generates order of exploration'
@@ -52,8 +61,8 @@ class GenerateBatch(object):
         'Generates data of batch_size samples'
 
         # Initialization
-        batch_X = np.zeros((self.n_batch, self.max_len), dtype=int)
-        batch_y = np.zeros((self.n_batch, self.n_classes), dtype=float)
+        batch_X = np.zeros((self.n_batch, self.max_len), dtype=np.int32)
+        batch_y = np.zeros((self.n_batch, self.n_classes), dtype=np.float32)
 
         for i,id in enumerate(ids):
 
@@ -63,7 +72,8 @@ class GenerateBatch(object):
             read_idxs = random.sample(range(len(x)),self.n_reads)
 
             for r,idx in enumerate(read_idxs):
-                batch_X[i,r*self.read_len + r*self.n_pad:(r+1)*self.read_len + r*self.n_pad] = x[idx]
+                batch_X[i,r*self.read_len + r*self.n_pad:(r+1)*self.read_len \
+                        + r*self.n_pad] = x[idx]
 
         return batch_X, batch_y
     
@@ -71,8 +81,8 @@ class GenerateBatch(object):
         'Generates data of batch_size samples'
 
         # Initialization
-        batch_X = np.zeros((self.n_batch, self.max_len, self.n_vocab), dtype=float)
-        batch_y = np.zeros((self.n_batch, self.n_classes), dtype=float)
+        batch_X = np.zeros((self.n_batch, self.max_len, self.n_vocab), dtype=np.float32)
+        batch_y = np.zeros((self.n_batch, self.n_classes), dtype=np.float32)
 
         for i,id in enumerate(ids):
 
@@ -82,11 +92,12 @@ class GenerateBatch(object):
             read_idxs = random.sample(range(len(x)),self.n_reads)
 
             for r,idx in enumerate(read_idxs):
-                batch_X[i,r*self.read_len + r*self.n_pad:(r+1)*self.read_len + r*self.n_pad,x[idx]] = 1.0
+                batch_X[i,r*self.read_len + r*self.n_pad:(r+1)*self.read_len \
+                        + r*self.n_pad,x[idx]] = 1.0
 
         return batch_X, batch_y
 
-    def generate(self, fns, labels, ids, one_hot=False):
+    def generate(self, fns, labels, ids):
         'Generates batches of samples'
 
         # Infinite loop
@@ -107,14 +118,17 @@ class GenerateBatch(object):
 
                 yield [batch_X,batch_X,batch_X], batch_y
 
-    def __data_test(self, fns, ids):
+    def __data_test(self, fns, ids, n_reads):
         
+        max_len = n_reads * (self.read_len + self.n_pad)
+
         reads = list()
         
         for i,id in enumerate(ids):
 
             i_reads = six.moves.cPickle.load(open(fns[id],'rb'))
             random.shuffle(i_reads)
+            i_reads = i_reads[:n_reads]
 
             read = list()
 
@@ -124,46 +138,55 @@ class GenerateBatch(object):
 
             reads.append(read)
 
-        reads = sequence.pad_sequences(reads, maxlen=self.max_len)
+        reads = sequence.pad_sequences(reads, maxlen=max_len)
         
         return reads
         
-    def __1hot_test(self, fns, ids):
+    def __1hot_test(self, fns, ids, n_reads):
         
-        reads = np.zeros((len(ids), self.max_len, self.n_vocab), dtype=float)
+        max_len = n_reads * (self.read_len + self.n_pad)
+
+        reads = np.zeros((len(ids), max_len, self.n_vocab), dtype=np.float32)
         
         for i,id in enumerate(ids):
             
             i_reads = six.moves.cPickle.load(open(fns[id],'rb'))
             random.shuffle(i_reads)
+            i_reads = i_reads[:n_reads]
             
             position = 0
-            for r in i_reads:
+            for r in i_reads[:-1]:
                 for idx in r:
                     reads[i,position,idx] = 1.0
                     position += 1
-                for pad in range(len(self.n_pad)):
-                    reads[i,position,ids] = 1.0
-                    position += 1
-                    
+                position += self.n_pad
+            
+            for idx in i_reads[-1]:
+                reads[i,position,idx] = 1.0
+                position += 1
+
         return reads
                 
-    def test(self, fns, labels, ids, one_hot=False):
+    def test(self, fns, labels, ids, n_reads=None):
 
-        labs = np.zeros((len(ids),self.n_classes), dtype=float)
+        if n_reads is None:
+            n_reads = self.n_reads
+
+        labs = np.zeros((len(ids),self.n_classes), dtype=np.float32)
 
         for i,id in enumerate(ids):
             labs[i][labels[id]] = 1.0
             
-        if one_hot:
-            reads = self.__1hot_test(fns, ids)
+        if self.one_hot:
+            reads = self.__1hot_test(fns, ids, n_reads)
         else:
-            reads = self.__data_test(fns, ids)
+            reads = self.__data_test(fns, ids, n_reads)
         
         return [reads,reads,reads], labs
 
 k = int(argv[1])
 cl = argv[2]
+one_hot = bool(int(argv[3]))
 
 windows = (2,4,8)
 n_reads = 250
@@ -209,7 +232,8 @@ params = {'read_len': read_len,
           'n_batch': n_batch,  
           'n_reads': n_reads,
           'n_pad': max(windows) * k,
-          'shuffle': True}
+          'shuffle': True,
+          'one_hot': one_hot}
 
 gen = GenerateBatch(**params)
 
@@ -235,27 +259,37 @@ layer_embed = Embedding(input_dim=gen.n_vocab,
         name='embedding')
 
 for i,w in enumerate(gen.windows):
-    inputs.append(Input(shape=(gen.max_len,),
-        dtype='int32',
-        name='input_cp' + str(i)))
-    embedding = layer_embed(inputs[i])
-#    embedding = Embedding(input_dim=gen.n_vocab,
-#            output_dim=d_emb,
-#            input_length=gen.max_len,
-#            mask_zero=False,
-#            name='embed_' + str(i))(inputs[i])
-    layer_cnn = Conv1D(d_cnn, 
+
+    if gen.one_hot:
+
+        inputs.append(Input(shape=gen.in_len,
+            dtype=gen.in_type,
+            name='input_cp' + str(i)))
+        layer_cnn = Conv1D(d_cnn,
             kernel_size=w,
             padding='same',
             activation='relu',
-            name='cnn_w' + str(w))(embedding)
+            name='cnn_' + str(i) + '_w' + str(w))(inputs[i])
+
+    else:
+
+        inputs.append(Input(shape=gen.in_len,
+            dtype=gen.in_type,
+            name='input_cp' + str(i)))
+        embedding = layer_embed(inputs[i])
+        layer_cnn = Conv1D(d_cnn, 
+            kernel_size=w,
+            padding='same',
+            activation='relu',
+            name='cnn_' + str(i) + '_w' + str(w))(embedding)
+
     submodels.append(layer_cnn)
 
 layer_cnns = concatenate(submodels,name='merge_cnn_features')
-layer_dropout_1 = Dropout(.1)(layer_cnns) 
+layer_dropout_1 = Dropout(.1,name='dropout_cnns')(layer_cnns) 
 layer_lstm_1 = Bidirectional(LSTM(d_lstm,
         return_sequences=True,
-        dropout=.25, 
+        dropout=.2, 
         recurrent_dropout=.1),name='biLSTM')(layer_dropout_1)
 layer_lstm_n = Lambda(lambda x: x[:,-1,:],output_shape=(2*d_lstm, ),
         name='biLSTM_last_layer')(layer_lstm_1)
@@ -299,4 +333,4 @@ six.moves.cPickle.dump({'ids':ids,'labels':labels},
 six.moves.cPickle.dump({'test':scores,'acc':acc},
                 open('out/model_final_k' + str(k) + '_testscores.pkl','wb'))
 
-print(scores)
+print(acc)
