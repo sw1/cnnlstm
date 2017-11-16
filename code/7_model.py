@@ -25,8 +25,6 @@ from hyperopt import Trials, STATUS_OK, tpe, rand
 from hyperas import optim
 from hyperas.distributions import choice, uniform, conditional
 
-
-
 class GenerateBatch(object):
     def __init__(self, read_len, windows, n_vocab, 
             n_batch = 32, n_classes = 2, n_reads = 250, n_pad = 21, 
@@ -59,16 +57,36 @@ class GenerateBatch(object):
 
         for i,id in enumerate(ids):
 
-            x = six.moves.cPickle.load(open(fns[id],'rb'))
             batch_y[i][labels[id]] = 1.0
+            
+            x = six.moves.cPickle.load(open(fns[id],'rb'))
             read_idxs = random.sample(range(len(x)),self.n_reads)
 
             for r,idx in enumerate(read_idxs):
                 batch_X[i,r*self.read_len + r*self.n_pad:(r+1)*self.read_len + r*self.n_pad] = x[idx]
 
         return batch_X, batch_y
+    
+    def __1hot_generation(self, fns, labels, ids):
+        'Generates data of batch_size samples'
 
-    def generate(self, fns, labels, ids):
+        # Initialization
+        batch_X = np.zeros((self.n_batch, self.max_len, self.n_vocab), dtype=float)
+        batch_y = np.zeros((self.n_batch, self.n_classes), dtype=float)
+
+        for i,id in enumerate(ids):
+
+            batch_y[i][labels[id]] = 1.0
+            
+            x = six.moves.cPickle.load(open(fns[id],'rb'))
+            read_idxs = random.sample(range(len(x)),self.n_reads)
+
+            for r,idx in enumerate(read_idxs):
+                batch_X[i,r*self.read_len + r*self.n_pad:(r+1)*self.read_len + r*self.n_pad,x[idx]] = 1.0
+
+        return batch_X, batch_y
+
+    def generate(self, fns, labels, ids, one_hot=False):
         'Generates batches of samples'
 
         # Infinite loop
@@ -82,24 +100,22 @@ class GenerateBatch(object):
                 # Find list of IDs
                 batch_ids = ids_tmp[i*self.n_batch:(i+1)*self.n_batch]
                 # Generate data
-                batch_X, batch_y = self.__data_generation(fns, labels, batch_ids)
+                if one_hot:
+                    batch_X, batch_y = self.__1hot_generation(fns, labels, batch_ids)
+                else:
+                    batch_X, batch_y = self.__data_generation(fns, labels, batch_ids)
 
                 yield [batch_X,batch_X,batch_X], batch_y
 
-    def test(self, fns, labels, ids,trim=True):
-
+    def __data_test(self, fns, ids):
+        
         reads = list()
-        reads_len = list()
-        labs = np.zeros((len(ids),self.n_classes), dtype=float)
-
+        
         for i,id in enumerate(ids):
-
-            labs[i][labels[id]] = 1.0
 
             i_reads = six.moves.cPickle.load(open(fns[id],'rb'))
             random.shuffle(i_reads)
 
-            reads_len.append(len(i_reads))
             read = list()
 
             for r in i_reads:
@@ -109,9 +125,42 @@ class GenerateBatch(object):
             reads.append(read)
 
         reads = sequence.pad_sequences(reads, maxlen=self.max_len)
+        
+        return reads
+        
+    def __1hot_test(self, fns, ids):
+        
+        reads = np.zeros((len(ids), self.max_len, self.n_vocab), dtype=float)
+        
+        for i,id in enumerate(ids):
+            
+            i_reads = six.moves.cPickle.load(open(fns[id],'rb'))
+            random.shuffle(i_reads)
+            
+            position = 0
+            for r in i_reads:
+                for idx in r:
+                    reads[i,position,idx] = 1.0
+                    position += 1
+                for pad in range(len(self.n_pad)):
+                    reads[i,position,ids] = 1.0
+                    position += 1
+                    
+        return reads
+                
+    def test(self, fns, labels, ids, one_hot=False):
 
+        labs = np.zeros((len(ids),self.n_classes), dtype=float)
+
+        for i,id in enumerate(ids):
+            labs[i][labels[id]] = 1.0
+            
+        if one_hot:
+            reads = self.__1hot_test(fns, ids)
+        else:
+            reads = self.__data_test(fns, ids)
+        
         return [reads,reads,reads], labs
-
 
 k = int(argv[1])
 cl = argv[2]
@@ -181,7 +230,8 @@ submodels = list()
 
 layer_embed = Embedding(input_dim=gen.n_vocab, 
         output_dim=d_emb, 
-        input_length=gen.max_len,mask_zero=False,
+        input_length=gen.max_len,
+        mask_zero=False,
         name='embedding')
 
 for i,w in enumerate(gen.windows):
@@ -189,6 +239,11 @@ for i,w in enumerate(gen.windows):
         dtype='int32',
         name='input_cp' + str(i)))
     embedding = layer_embed(inputs[i])
+#    embedding = Embedding(input_dim=gen.n_vocab,
+#            output_dim=d_emb,
+#            input_length=gen.max_len,
+#            mask_zero=False,
+#            name='embed_' + str(i))(inputs[i])
     layer_cnn = Conv1D(d_cnn, 
             kernel_size=w,
             padding='same',
@@ -197,7 +252,7 @@ for i,w in enumerate(gen.windows):
     submodels.append(layer_cnn)
 
 layer_cnns = concatenate(submodels,name='merge_cnn_features')
-layer_dropout_1 = Dropout(.5)(layer_cnns) 
+layer_dropout_1 = Dropout(.1)(layer_cnns) 
 layer_lstm_1 = Bidirectional(LSTM(d_lstm,
         return_sequences=True,
         dropout=.25, 
@@ -236,7 +291,7 @@ X_testset, y_testset = gen.test(fns,labels,ids['test'])
 scores, acc = model.evaluate(X_testset,y_testset)
 
 
-model.save('out/model_final_k' + str(k) + '.pkl')
+model.save('out/model_final_k' + str(k) + '.hdf5')
 
 six.moves.cPickle.dump({'ids':ids,'labels':labels},
                 open('out/model_final_k' + str(k) + '_ids.pkl','wb'))
