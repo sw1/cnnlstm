@@ -20,11 +20,14 @@ module load python/intelpython/3.5.3
 k=4
 class=lake
 USERNAME=sw424
+coding=1
 
 SCRATCH=/scratch/$USERNAME/train_$class
 SCRATCH_OUT=$SCRATCH/out
 SCRATCH_DATA=$SCRATCH/data
 SCRATCH_KMERS=$SCRATCH_DATA/kmers_$k
+
+rm -rf $SCRATCH
 
 mkdir -p $SCRATCH_OUT
 mkdir -p $SCRATCH_KMERS
@@ -44,7 +47,7 @@ cp $labels $SCRATCH_DATA/
 
 cd $SCRATCH
 
-$py $script $k $class
+$py $script $k $class $coding
 
 cp $SCRATCH_OUT/* $OUT/
 

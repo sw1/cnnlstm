@@ -254,8 +254,7 @@ submodels = list()
 
 layer_embed = Embedding(input_dim=gen.n_vocab, 
         output_dim=d_emb, 
-        input_length=gen.max_len,
-        mask_zero=False,
+        #input_length=gen.max_len,
         name='embedding')
 
 for i,w in enumerate(gen.windows):
@@ -321,16 +320,17 @@ model.fit_generator(generator = train_generator,
                     callbacks=cbs,
                     verbose=1)
 
-X_testset, y_testset = gen.test(fns,labels,ids['test'])
-scores, acc = model.evaluate(X_testset,y_testset)
-
-
 model.save('out/model_final_k' + str(k) + '.hdf5')
 
 six.moves.cPickle.dump({'ids':ids,'labels':labels},
                 open('out/model_final_k' + str(k) + '_ids.pkl','wb'))
 
-six.moves.cPickle.dump({'test':scores,'acc':acc},
+X_testset, y_testset = gen.test(fns,labels,ids['test'],n_reads=1000)
+loss, acc = model.evaluate(X_testset,y_testset,batch_size=gen.n_batch)
+
+print('Testing accuracy: %.2f%%' % (acc*100))
+
+six.moves.cPickle.dump({'loss':loss,'acc':acc},
                 open('out/model_final_k' + str(k) + '_testscores.pkl','wb'))
 
-print(acc)
+
