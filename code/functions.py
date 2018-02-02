@@ -191,153 +191,49 @@ class GenerateBatch(object):
         
         return [reads,reads,reads], labs
 
-k = int(argv[1])
-cl = argv[2]
-one_hot = bool(int(argv[3]))
+def prepare_data(cl,path,k=4,windows=(2,4,8),n_reads=250,n_batch=32,one_hot=False,seed=43):
+    
+    nts = ['A','C','G','T']
+    key = {''.join(kmer):i+1 for i,kmer in enumerate(product(nts,repeat=k))}
+    key['PAD'] = 0
 
-windows = (2,4,8)
-n_reads = 250
-n_batch = 32
+    kmer_dir = os.path.join(path,'kmers_' + str(k))
+    meta_fn = os.path.join(path,'labels.csv')
 
-seed = 42
-
-nts = ['A','C','G','T']
-key = {''.join(kmer):i+1 for i,kmer in enumerate(product(nts,repeat=k))}
-key['PAD'] = 0
-
-kmer_dir = 'data/kmers_' + str(k)
-
-meta_fn = 'data/labels.csv'
-
-fns = {f.split('.pkl')[0]:os.path.join(kmer_dir, f) for f in os.listdir(kmer_dir)
+    fns = {f.split('.pkl')[0]:os.path.join(kmer_dir, f) for f in os.listdir(kmer_dir)
                    if os.path.isfile(os.path.join(kmer_dir, f))}
 
-meta = csv.reader(open(meta_fn,'r'), delimiter=',', quotechar='"')
-meta = [(r,l) for r,l in meta if r in fns]
+    meta = csv.reader(open(meta_fn,'r'), delimiter=',', quotechar='"')
+    meta = [(r,l) for r,l in meta if r in fns]
 
-train, test = train_test_split(meta,test_size=0.2,random_state=seed,
+    train, test = train_test_split(meta,test_size=0.2,random_state=seed,
         shuffle=True,stratify=[l for r,l in meta])
-val, test = train_test_split(test,test_size=0.5,random_state=seed,
+    val, test = train_test_split(test,test_size=0.5,random_state=seed,
         shuffle=True,stratify=[l for r,l in test])
 
-ids_train = [r for r,l in train]
-ids_val = [r for r,l in val]
-ids_test = [r for r,l in test]
+    ids_train = [r for r,l in train]
+    ids_val = [r for r,l in val]
+    ids_test = [r for r,l in test]
 
-ids = {'train':ids_train,'val':ids_val,'test':ids_test}
-labels = {r:int(l) for r,l in meta}
+    ids = {'train':ids_train,'val':ids_val,'test':ids_test}
+    labels = {r:int(l) for r,l in meta}
 
-read_len = len(six.moves.cPickle.load(open(next(iter(fns.values())),'rb'))[0])
+    read_len = len(six.moves.cPickle.load(open(next(iter(fns.values())),'rb'))[0])
 
-n_classes = max(labels.values()) + 1
-class_weights = Counter(labels.values())
+    n_classes = max(labels.values()) + 1
+    class_weights = Counter(labels.values())
 
-params = {'read_len': read_len,
-          'windows': windows,
-          'n_vocab': len(key),
-          'n_classes': n_classes,
-          'n_batch': n_batch,  
-          'n_reads': n_reads,
-          'n_pad': max(windows) * k,
-          'shuffle': True,
-          'one_hot': one_hot}
+    params = {'read_len': read_len,
+              'windows': windows,
+              'n_vocab': len(key),
+              'n_classes': n_classes,
+              'n_batch': n_batch,  
+              'n_reads': n_reads,
+              'n_pad': max(windows) * k,
+              'shuffle': True,
+              'one_hot': one_hot}
 
-gen = GenerateBatch(**params)
+    gen = GenerateBatch(**params)
 
-train_generator = gen.generate(fns,labels,ids['train'])
-val_generator = gen.generate(fns,labels,ids['val'])
-
-
-
-
-
-n_epochs = 100
-d_emb = 64
-d_cnn = 32
-d_lstm = 32
-
-inputs = list()
-submodels = list()
-
-layer_embed = Embedding(input_dim=gen.n_vocab, 
-        output_dim=d_emb, 
-        #input_length=gen.max_len,
-        name='embedding')
-
-for i,w in enumerate(gen.windows):
-
-    if gen.one_hot:
-
-        inputs.append(Input(shape=gen.in_len,
-            dtype=gen.in_type,
-            name='input_cp' + str(i)))
-        layer_cnn = Conv1D(d_cnn,
-            kernel_size=w,
-            padding='same',
-            activation='relu',
-            name='cnn_' + str(i) + '_w' + str(w))(inputs[i])
-
-    else:
-
-        inputs.append(Input(shape=gen.in_len,
-            dtype=gen.in_type,
-            name='input_cp' + str(i)))
-        embedding = layer_embed(inputs[i])
-        layer_cnn = Conv1D(d_cnn, 
-            kernel_size=w,
-            padding='same',
-            activation='relu',
-            name='cnn_' + str(i) + '_w' + str(w))(embedding)
-
-    submodels.append(layer_cnn)
-
-layer_cnns = concatenate(submodels,name='merge_cnn_features')
-layer_dropout_1 = Dropout(.1,name='dropout_cnns')(layer_cnns) 
-layer_lstm_1 = Bidirectional(LSTM(d_lstm,
-        return_sequences=True,
-        dropout=.2, 
-        recurrent_dropout=.1),name='biLSTM')(layer_dropout_1)
-layer_lstm_n = Lambda(lambda x: x[:,-1,:],output_shape=(2*d_lstm, ),
-        name='biLSTM_last_layer')(layer_lstm_1)
-output = Dense(gen.n_classes,activation='softmax',name='output')(layer_lstm_n)
-model = Model(inputs=inputs,outputs=[output])
-
-model_cp = ModelCheckpoint('out/model_k' + str(k) + '_{epoch:02d}_{val_loss:.2f}.hdf5',
-        monitor='loss',verbose=1,save_best_only=True,period=1)
-model_reduce_lr = ReduceLROnPlateau(monitor='loss',factor=0.65,patience=5,min_lr=.00005,
-        verbose=1)
-model_stop = EarlyStopping(monitor='loss',min_delta=0.01,patience=50,verbose=1)
-model_tb = TensorBoard(log_dir='/scratch/sw424/train_' + cl + '/logs_k' + str(k),
-        write_graph=True,write_grads=True,
-        batch_size=32,write_images=True)
-cbs = [model_cp,model_reduce_lr,model_stop,model_tb]
-
-adam = Adam(lr=.01)
-
-model.compile(loss='categorical_crossentropy',
-        optimizer=adam,
-        metrics=['accuracy'])
-
-model.fit_generator(generator = train_generator,
-                    steps_per_epoch = len(ids['train'])//gen.n_batch,
-                    validation_data = val_generator,
-                    validation_steps = len(ids['val'])//gen.n_batch,
-                    epochs=n_epochs,
-                    class_weight=class_weights,
-                    callbacks=cbs,
-                    verbose=1)
-
-model.save('out/model_final_k' + str(k) + '.hdf5')
-
-six.moves.cPickle.dump({'ids':ids,'labels':labels},
-                open('out/model_final_k' + str(k) + '_ids.pkl','wb'))
-
-X_testset, y_testset = gen.test(fns,labels,ids['test'],n_reads=1000)
-loss, acc = model.evaluate(X_testset,y_testset,batch_size=gen.n_batch)
-
-print('Testing accuracy: %.2f%%' % (acc*100))
-
-six.moves.cPickle.dump({'loss':loss,'acc':acc},
-                open('out/model_final_k' + str(k) + '_testscores.pkl','wb'))
-
+    return gen, fns, labels, ids
 
